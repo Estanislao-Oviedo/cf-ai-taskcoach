@@ -1,153 +1,197 @@
-# LLM Chat Application Template
+# Cloudflare AI Chat App
 
-A simple, ready-to-deploy chat application template powered by Cloudflare Workers AI. This template provides a clean starting point for building AI chat applications with streaming responses.
+A multi-chat LLM application powered by **Cloudflare Workers AI** with persistent cloud storage using **Cloudflare KV**.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/templates/tree/main/llm-chat-app-template)
-
-<!-- dash-content-start -->
-
-## Demo
-
-This template demonstrates how to build an AI-powered chat interface using Cloudflare Workers AI with streaming responses. It features:
-
-- Real-time streaming of AI responses using Server-Sent Events (SSE)
-- Easy customization of models and system prompts
-- Support for AI Gateway integration
-- Clean, responsive UI that works on mobile and desktop
+**Live Demo**: https://cf-ai-taskcoach.geroau.workers.dev/
 
 ## Features
 
-- 💬 Simple and responsive chat interface
-- ⚡ Server-Sent Events (SSE) for streaming responses
-- 🧠 Powered by Cloudflare Workers AI LLMs
-- 🛠️ Built with TypeScript and Cloudflare Workers
-- 📱 Mobile-friendly design
-- 🔄 Maintains chat history on the client
-- 🔎 Built-in Observability logging
-<!-- dash-content-end -->
+- **Multiple Chats** - Create, switch, and manage multiple conversations
+- **Cloud Storage** - All chats persist in Cloudflare KV namespace
+- **Streaming Responses** - Real-time AI responses 
+- **Chat Caching** - In-memory cache for fast switching between chats
+- **Delete Chats** - Remove unwanted conversations
+- **System Prompts** - Configurable AI behavior with hidden system messages
 
-## Getting Started
+## Tech Stack
 
-### Prerequisites
+- **Runtime**: Cloudflare Workers (TypeScript)
+- **AI Model**: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`
+- **Storage**: Cloudflare KV Namespace
+- **Frontend**: Vanilla JavaScript, HTML, CSS
 
-- [Node.js](https://nodejs.org/) (v18 or newer)
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
-- A Cloudflare account with Workers AI access
-
-### Installation
-
-1. Clone this repository:
-
-   ```bash
-   git clone https://github.com/cloudflare/templates.git
-   cd templates/llm-chat-app
-   ```
-
-2. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-3. Generate Worker type definitions:
-   ```bash
-   npm run cf-typegen
-   ```
-
-### Development
-
-Start a local development server:
-
-```bash
-npm run dev
-```
-
-This will start a local server at http://localhost:8787.
-
-Note: Using Workers AI accesses your Cloudflare account even during local development, which will incur usage charges.
-
-### Deployment
-
-Deploy to Cloudflare Workers:
-
-```bash
-npm run deploy
-```
-
-### Monitor
-
-View real-time logs associated with any deployed Worker:
-
-```bash
-npm wrangler tail
-```
 
 ## Project Structure
 
 ```
-/
-├── public/             # Static assets
-│   ├── index.html      # Chat UI HTML
-│   └── chat.js         # Chat UI frontend script
+cf-ai-taskcoach/
 ├── src/
-│   ├── index.ts        # Main Worker entry point
-│   └── types.ts        # TypeScript type definitions
-├── test/               # Test files
-├── wrangler.jsonc      # Cloudflare Worker configuration
-├── tsconfig.json       # TypeScript configuration
-└── README.md           # This documentation
+│   ├── index.ts          # Worker request handler & API endpoints
+│   └── types.ts          # TypeScript interfaces
+├── public/
+│   ├── index.html        # Frontend UI
+│   └── chat.js           # Chat logic & API calls
+├── wrangler.jsonc        # Cloudflare configuration
+├── tsconfig.json         # TypeScript config
+└── package.json          # Dependencies
+```
+
+## Setup
+
+### Prerequisites
+
+- Node.js 18+
+- Wrangler CLI: `npm install -g @cloudflare/wrangler`
+- Cloudflare account
+
+### Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/Estanislao-Oviedo/cf-ai-taskcoach
+cd cf-ai-taskcoach
+```
+
+2. Install dependencies:
+```bash
+npm install
+```
+
+3. Authenticate with Cloudflare:
+```bash
+wrangler login
+```
+
+4. Create a KV namespace:
+```bash
+wrangler kv:namespace create "CHAT_HISTORY"
+```
+
+Update `wrangler.jsonc` with the namespace ID from the output.
+
+5. Start development server:
+```bash
+npm run dev
+```
+
+The app will be available at `http://localhost:8787`
+
+## API Endpoints
+
+### GET `/api/history?userId=<userId>&chatId=<chatId>`
+Retrieve chat history for a specific chat.
+
+**Response:**
+```json
+{
+  "history": [
+    { "role": "user", "content": "Hello" },
+    { "role": "assistant", "content": "Hi! How can I help?" }
+  ]
+}
+```
+
+### POST `/api/chat`
+Send a message and get AI response stream.
+
+**Request:**
+```json
+{
+  "userId": "user-uuid",
+  "chatId": "chat-uuid",
+  "messages": [
+    { "role": "user", "content": "What is 2+2?" }
+  ]
+}
+```
+
+### GET `/api/conversations?userId=<userId>`
+Get all chats for a user.
+
+**Response:**
+```json
+{
+  "chats": [
+    { "chatId": "uuid-1", "name": "Chat 1" },
+    { "chatId": "uuid-2", "name": "Chat 2" }
+  ]
+}
+```
+
+### DELETE `/api/history?userId=<userId>&chatId=<chatId>`
+Delete a chat.
+
+**Response:**
+```json
+{ "message": "Chat deleted" }
+```
+
+## Development
+
+### Build TypeScript:
+```bash
+npm run check
+```
+
+### Deploy to Cloudflare:
+```bash
+npm run deploy
+```
+
+### Monitor logs:
+```bash
+wrangler tail
 ```
 
 ## How It Works
 
-### Backend
+### Chat Creation
+1. User clicks "+" button to create new chat
+2. Frontend generates unique `chatId` (UUID)
+3. Chat name auto-increments: finds first missing number (Chat 1, Chat 2, etc.)
+4. New chat added to sidebar and selected
 
-The backend is built with Cloudflare Workers and uses the Workers AI platform to generate responses. The main components are:
+### Chat Persistence
+1. User sends message → POST `/api/chat`
+2. Worker retrieves chat history from KV
+3. AI generates response and sends stream
+4. Worker saves updated history to KV with 7-day epiration
+5. System prompt is stored but hidden from UI
 
-1. **API Endpoint** (`/api/chat`): Accepts POST requests with chat messages and streams responses
-2. **Streaming**: Uses Server-Sent Events (SSE) for real-time streaming of AI responses
-3. **Workers AI Binding**: Connects to Cloudflare's AI service via the Workers AI binding
+### Chat Switching
+1. User clicks chat in sidebar
+2. Frontend checks `chatCache` for instant load
+3. If not cached, fetches from `/api/history`
+4. Chat messages render on screen
 
-### Frontend
+### Error Handling
+- Missing parameters → 400 Bad Request
+- KV read/write failures → 500 Internal Server Error
+- Failed message processing → User-friendly error message in chat
 
-The frontend is a simple HTML/CSS/JavaScript application that:
+## Configuration
 
-1. Presents a chat interface
-2. Sends user messages to the API
-3. Processes streaming responses in real-time
-4. Maintains chat history on the client side
+Edit `src/index.ts` to change:
 
-## Customization
+```typescript
+// AI Model
+const MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
-### Changing the Model
+// System prompt (hidden from users)
+const SYSTEM_PROMPT = "You are a helpful, friendly assistant...";
+```
 
-To use a different AI model, update the `MODEL_ID` constant in `src/index.ts`. You can find available models in the [Cloudflare Workers AI documentation](https://developers.cloudflare.com/workers-ai/models/).
-
-### Using AI Gateway
-
-The template includes commented code for AI Gateway integration, which provides additional capabilities like rate limiting, caching, and analytics.
-
-To enable AI Gateway:
-
-1. [Create an AI Gateway](https://dash.cloudflare.com/?to=/:account/ai/ai-gateway) in your Cloudflare dashboard
-2. Uncomment the gateway configuration in `src/index.ts`
-3. Replace `YOUR_GATEWAY_ID` with your actual AI Gateway ID
-4. Configure other gateway options as needed:
-   - `skipCache`: Set to `true` to bypass gateway caching
-   - `cacheTtl`: Set the cache time-to-live in seconds
-
-Learn more about [AI Gateway](https://developers.cloudflare.com/ai-gateway/).
-
-### Modifying the System Prompt
-
-The default system prompt can be changed by updating the `SYSTEM_PROMPT` constant in `src/index.ts`.
-
-### Styling
-
-The UI styling is contained in the `<style>` section of `public/index.html`. You can modify the CSS variables at the top to quickly change the color scheme.
+Edit `public/chat.js` to adjust:
+- Cache behavior
+- Message display
+- Error messages
 
 ## Resources
 
 - [Cloudflare Workers Documentation](https://developers.cloudflare.com/workers/)
 - [Cloudflare Workers AI Documentation](https://developers.cloudflare.com/workers-ai/)
 - [Workers AI Models](https://developers.cloudflare.com/workers-ai/models/)
+
+## License
+
+MIT
