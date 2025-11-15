@@ -35,7 +35,7 @@ export default {
 
     // API Routes
     if (url.pathname === "/api/history") {
-      // Handle POST requests for chat
+      // Handle GET requests for chat history
       if (request.method === "GET") {
         return getChatHistory(request, env);
       }
@@ -47,7 +47,7 @@ export default {
     if (url.pathname === "/api/chat") {
       // Handle POST requests for chat
       if (request.method === "POST") {
-        return handleChatRequest(request, env);
+        return handleChatRequest(request, env, ctx); // ← Pass ctx here!
       }
 
       // Method not allowed for other request types
@@ -58,162 +58,6 @@ export default {
     return new Response("Not found", { status: 404 });
   },
 } satisfies ExportedHandler<Env>;
-
-/**
- * Handles chat API requests
- */
-async function handleChatRequest(request: Request, env: Env): Promise<Response> {
-  try {
-    // Parse JSON request body
-    const body = await request.json().catch(() => null);
-    if (!body || typeof body !== "object") {
-      return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
-        status: 400,
-        headers: { "content-type": "application/json" },
-      });
-    }
-
-    const { userId, messages: incoming } = body as {
-      userId?: string;
-      messages?: unknown;
-    };
-
-    if (!userId || typeof userId !== "string") {
-      return new Response(JSON.stringify({ error: "Missing or invalid userId" }), {
-        status: 400,
-        headers: { "content-type": "application/json" },
-      });
-    }
-
-    // Normalize incoming messages to ChatMessage[]
-    let incomingMessages: ChatMessage[] = [];
-    if (Array.isArray(incoming)) {
-      incomingMessages = incoming.map((m) => {
-        if (typeof m === "string") return { role: "user", content: m };
-        if (m && typeof m === "object") {
-          // Accept both { role, content } shapes or { content } strings
-          const role = (m as any).role as ChatMessage["role"] | undefined;
-          const content = (m as any).content ?? String(m);
-          return { role: role ?? "user", content: String(content) };
-        }
-        return { role: "user", content: String(m) };
-      });
-    }
-
-    // Load history from KV
-    let history: ChatMessage[] = [];
-    try {
-      const stored = await env.CHAT_HISTORY.get(`history:${userId}`);
-      history = stored ? JSON.parse(stored) : [];
-    } catch (err) {
-      console.warn("Failed to read CHAT_HISTORY:", err);
-      history = [];
-    }
-
-    // Merge history with incoming messages (history first)
-    const messages: ChatMessage[] = [...history, ...incomingMessages];
-
-    // Add system prompt if not present
-    if (!messages.some((msg) => msg.role === "system")) {
-      messages.unshift({ role: "system", content: SYSTEM_PROMPT });
-    }
-
-    const aiResponse = await env.AI.run(
-      MODEL_ID,
-      {
-        messages,
-        max_tokens: 1024,
-      },
-      {
-        returnRawResponse: true,
-      },
-    );
-
-    // If the AI response has a streaming body, tee it so we can both return
-    // a stream to the client and read a copy here to persist the assistant
-    // message to KV when complete.
-    try {
-      console.log(1)
-      const body = aiResponse.body;
-      if (body && typeof body.tee === "function") {
-        console.log(2)
-        const [streamForClient, streamForProcessing] = body.tee();
-
-        // Start background task to collect assistant text from the streamed chunks
-        (async () => {
-          try {
-            console.log(3)
-            const reader = streamForProcessing.getReader();
-            const decoder = new TextDecoder();
-            let responseText = "";
-            console.log("before true")
-            while (true) {
-              console.log("before true2 2")
-              const { done, value } = await reader.read();
-              console.log(" await")
-              console.log(done)
-              console.log(value)
-              console.log("before break")
-              if (done) {
-                break;
-              }
-              console.log("before lines")
-              // Decode chunk
-              const chunk = decoder.decode(value, { stream: true });
-              const lines = chunk.split("\n");
-              console.log("lines")
-              for (const line of lines) {
-                try {
-                  console.log(4)
-                  const jsonData = JSON.parse(line);
-                  if (jsonData.response) {
-                    // Append new content to existing text
-                    responseText += jsonData.response;
-
-                  }
-                } catch (e) {
-                  console.error("Error parsing JSON:", e);
-                }
-              }
-            }
-            messages.push({ role: "assistant", content: responseText });
-
-            // Update conversation to KV
-            try {
-                console.log(5)
-                await env.CHAT_HISTORY.put(`history:${userId}`, JSON.stringify(messages), {
-                expirationTtl: 60 * 60 * 24 * 7, // keep 7 days by default
-                });
-            } catch (err) {
-              console.warn("Failed to write CHAT_HISTORY:", err);
-            }
-
-          } catch (err) {
-            console.warn("Error reading AI response stream:", err);
-          }
-        })();
-
-        // Return the client-facing response using the client stream and original headers
-        const clientHeaders = new Headers(aiResponse.headers);
-        return new Response(streamForClient, {
-          status: aiResponse.status,
-          statusText: aiResponse.statusText,
-          headers: clientHeaders,
-        });
-      }
-  } catch (err) {
-    console.warn("Failed to tee AI response stream:", err);
-  }
-
-  return aiResponse;
-  } catch (error) {
-    console.error("Error processing chat request:", error);
-    return new Response(JSON.stringify({ error: "Failed to process request" }), {
-      status: 500,
-      headers: { "content-type": "application/json" },
-    });
-  }
-}
 
 async function getChatHistory(request: Request, env: Env): Promise<Response> {
   request.headers.get("content-type")?.includes("application/json");
@@ -240,4 +84,160 @@ async function getChatHistory(request: Request, env: Env): Promise<Response> {
     headers: { "content-type": "application/json" },
   });
   return response;
+}
+
+/**
+ * Handles chat API requests
+ */
+async function handleChatRequest(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
+  try {
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    const { userId, messages: incoming } = body as {
+      userId?: string;
+      messages?: unknown;
+    };
+
+    if (!userId || typeof userId !== "string") {
+      return new Response(JSON.stringify({ error: "Missing or invalid userId" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    let incomingMessages: ChatMessage[] = [];
+    if (Array.isArray(incoming)) {
+      incomingMessages = incoming.map((m) => {
+        if (typeof m === "string") return { role: "user", content: m };
+        if (m && typeof m === "object") {
+          const role = (m as any).role as ChatMessage["role"] | undefined;
+          const content = (m as any).content ?? String(m);
+          return { role: role ?? "user", content: String(content) };
+        }
+        return { role: "user", content: String(m) };
+      });
+    }
+
+    let history: ChatMessage[] = [];
+    try {
+      const stored = await env.CHAT_HISTORY.get(`history:${userId}`);
+      history = stored ? JSON.parse(stored) : [];
+    } catch (err) {
+      console.warn("Failed to read CHAT_HISTORY:", err);
+    }
+
+    const messages: ChatMessage[] = [...history, ...incomingMessages];
+
+    if (!messages.some((msg) => msg.role === "system")) {
+      messages.unshift({ role: "system", content: SYSTEM_PROMPT });
+    }
+
+    // Get AI stream
+    const aiStream = await env.AI.run(MODEL_ID, {
+      messages,
+      max_tokens: 1024,
+      stream: true,
+    }) as ReadableStream;
+
+    // Use TransformStream to capture response without re-chunking
+    let responseText = "";
+    let buffer = "";
+    
+    const { readable, writable } = new TransformStream({
+      transform(chunk, controller) {
+        // Pass through immediately - preserves original chunking
+        controller.enqueue(chunk);
+        
+        // Capture for history
+        const decoder = new TextDecoder();
+        buffer += decoder.decode(chunk, { stream: true });
+        
+        // Process complete lines
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        
+        for (const line of lines) {
+          if (!line.trim() || line === "data: [DONE]") continue;
+          
+          const jsonStr = line.startsWith("data: ") 
+            ? line.slice(6).trim() 
+            : line.trim();
+          
+          if (!jsonStr) continue;
+          
+          try {
+            const jsonData = JSON.parse(jsonStr);
+            if (jsonData.response) {
+              responseText += jsonData.response;
+            }
+          } catch (e) {
+            // Skip invalid JSON
+          }
+        }
+      },
+      
+      flush() {
+        // Process remaining buffer
+        if (buffer.trim() && buffer !== "data: [DONE]") {
+          const jsonStr = buffer.startsWith("data: ") 
+            ? buffer.slice(6).trim() 
+            : buffer.trim();
+          try {
+            const jsonData = JSON.parse(jsonStr);
+            if (jsonData.response) {
+              responseText += jsonData.response;
+            }
+          } catch (e) {
+            console.error("Error parsing JSON:", e);
+          }
+        }
+        
+        // Update chat history in KV
+        if (responseText) {
+          messages.push({ role: "assistant", content: responseText });
+          ctx.waitUntil(
+            env.CHAT_HISTORY.put(
+              `history:${userId}`,
+              JSON.stringify(messages),
+              { expirationTtl: 60 * 60 * 24 * 7 }
+            ).catch(err => console.warn("Failed to save chat history:", err))
+          );
+          console.log("Saved chat history. Total response length:", responseText.length);
+        }
+      }
+    });
+
+    // Pipe AI stream through transform (preserves chunking)
+    aiStream.pipeTo(writable).catch(err => 
+      console.warn("Stream pipe error:", err)
+    );
+
+    return new Response(readable, {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+      },
+    });
+
+  } catch (error) {
+    console.error("Error processing chat request:", error);
+    return new Response(JSON.stringify({ 
+      error: "Failed to process request",
+      message: error instanceof Error ? error.message : String(error)
+    }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
 }

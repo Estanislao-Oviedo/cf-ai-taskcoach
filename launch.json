@@ -1,0 +1,14 @@
+{
+    "configurations": [
+    {
+        "name": "Wrangler",
+        "type": "node",
+        "request": "attach",
+        "port": 8787,
+        "cwd": "${workspaceFolder}",
+        "resolveSourceMapLocations": null,
+        "attachExistingChildren": false,
+        "autoAttachChildProcesses": false
+    }
+    ]
+}

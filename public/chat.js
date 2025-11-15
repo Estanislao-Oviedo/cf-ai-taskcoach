@@ -9,6 +9,7 @@ const chatMessages = document.getElementById("chat-messages");
 const userInput = document.getElementById("user-input");
 const sendButton = document.getElementById("send-button");
 const typingIndicator = document.getElementById("typing-indicator");
+const newConvoButton = document.getElementById("new-convo-button");
 
 // Chat state
 let chatHistory = [];
@@ -31,7 +32,7 @@ userInput.addEventListener("keydown", function (e) {
 // Send button click handler
 sendButton.addEventListener("click", sendMessage);
 
-// On page load fetch  history and render
+// On page load fetch chat history and render
 window.addEventListener("DOMContentLoaded", async () => {
   const userId = getUserId();
   try {
@@ -118,6 +119,8 @@ async function sendMessage() {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let responseText = "";
+    let buffer = ""; // Buffer for incomplete lines
+
 
     while (true) {
       const { done, value } = await reader.read();
@@ -126,14 +129,27 @@ async function sendMessage() {
         break;
       }
 
-      // Decode chunk
+      // Decode chunk and add to buffer
       const chunk = decoder.decode(value, { stream: true });
+      buffer += chunk;
 
-      // Process SSE format
-      const lines = chunk.split("\n");
+      // Process complete lines
+      const lines = buffer.split("\n");
+      // Keep the last incomplete line in buffer
+      buffer = lines.pop() || "";
+
       for (const line of lines) {
+        if (!line.trim() || line === "data: [DONE]") continue;
+
+        // Remove "data: " prefix for SSE format
+        const jsonStr = line.startsWith("data: ")
+          ? line.slice(6).trim()
+          : line.trim();
+
+        if (!jsonStr) continue;
+
         try {
-          const jsonData = JSON.parse(line);
+          const jsonData = JSON.parse(jsonStr);
           if (jsonData.response) {
             // Append new content to existing text
             responseText += jsonData.response;
@@ -193,8 +209,8 @@ function renderChatHistory() {
 function getUserId() {
   let userId = localStorage.getItem("userId");
   if (!userId) {
-  userId = crypto.randomUUID?.();
-  localStorage.setItem("userId", userId);
+    userId = crypto.randomUUID?.();
+    localStorage.setItem("userId", userId);
   }
   return userId;
 }
