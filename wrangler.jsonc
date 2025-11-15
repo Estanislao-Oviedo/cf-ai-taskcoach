@@ -17,5 +17,11 @@
   "ai": {
     "binding": "AI"
   },
-  "upload_source_maps": true
+  "upload_source_maps": true,
+  "kv_namespaces": [
+    {
+      "binding": "CHAT_HISTORY",
+      "id": "ebe9c1bd5ed642dbbb426dae9069131d"
+    }
+  ]
 }
