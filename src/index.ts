@@ -7,7 +7,7 @@
  *
  * @license MIT
  */
-import { Env, ChatMessage } from "./types";
+import { Env, ChatMessage, UserChats } from "./types";
 
 // Model ID for Workers AI model
 // https://developers.cloudflare.com/workers-ai/models/
@@ -39,6 +39,20 @@ export default {
       if (request.method === "GET") {
         return getChatHistory(request, env);
       }
+      // Handle DELETE request for chat history
+      if (request.method === "DELETE") {
+        return deleteChatHistory(request, env);
+      }
+
+      // Method not allowed for other request types
+      return new Response("Method not allowed", { status: 405 });
+    }
+
+    if (url.pathname === "/api/conversations") {
+      // Handle GET requests for conversastions
+      if (request.method === "GET") {
+        return getConversations(request, env);
+      }
 
       // Method not allowed for other request types
       return new Response("Method not allowed", { status: 405 });
@@ -47,7 +61,7 @@ export default {
     if (url.pathname === "/api/chat") {
       // Handle POST requests for chat
       if (request.method === "POST") {
-        return handleChatRequest(request, env, ctx); // ← Pass ctx here!
+        return handleChatRequest(request, env, ctx);
       }
 
       // Method not allowed for other request types
@@ -59,7 +73,94 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
+// Get chat conversation history
 async function getChatHistory(request: Request, env: Env): Promise<Response> {
+  request.headers.get("content-type")?.includes("application/json");
+  const url = new URL(request.url);
+  const userId = url.searchParams.get("userId");
+  const chatId = url.searchParams.get("chatId");
+  if (!userId) {
+    return new Response(JSON.stringify({ error: "Missing userId parameter" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (!chatId) {
+    return new Response(JSON.stringify({ error: "Missing chatId parameter" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  let userChats: UserChats = {}
+  let history: ChatMessage[] = [];
+  try {
+      const stored = await env.CHAT_HISTORY.get(`history:${userId}`);
+      if (stored) {
+        userChats = JSON.parse(stored);
+        history = userChats[chatId]?.messages || [];
+      }
+  } catch (err) {
+    console.warn("Failed to read CHAT_HISTORY:", err);
+    return new Response(JSON.stringify({ error: "Failed to load chat history" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  const response = new Response(JSON.stringify({ history }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+  return response;
+}
+
+// Delete chat conversation history
+async function deleteChatHistory(request: Request, env: Env): Promise<Response> {
+  request.headers.get("content-type")?.includes("application/json");
+  const url = new URL(request.url);
+  const userId = url.searchParams.get("userId");
+  const chatId = url.searchParams.get("chatId");
+  if (!userId) {
+    return new Response(JSON.stringify({ error: "Missing userId parameter" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (!chatId) {
+    return new Response(JSON.stringify({ error: "Missing chatId parameter" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  let userChats: UserChats = {}
+  try {
+      const stored = await env.CHAT_HISTORY.get(`history:${userId}`);
+      if (stored) {
+        userChats = JSON.parse(stored);
+      }
+      if (userChats[chatId]) {
+        delete userChats[chatId];
+      }
+      await env.CHAT_HISTORY.put(
+        `history:${userId}`,
+        JSON.stringify(userChats),
+        { expirationTtl: 60 * 60 * 24 * 7 }
+      );
+  } catch (err) {
+    console.warn("Failed to delete chat:", err);
+    return new Response(JSON.stringify({ error: "Failed to delete chat" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  const response = new Response(JSON.stringify({ message: "Chat deleted" }),{
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+  return response;
+}
+
+// Get all user chat conversations names and their IDs
+async function getConversations(request: Request, env: Env): Promise<Response> {
   request.headers.get("content-type")?.includes("application/json");
   const url = new URL(request.url);
   const userId = url.searchParams.get("userId");
@@ -69,17 +170,24 @@ async function getChatHistory(request: Request, env: Env): Promise<Response> {
       headers: { "content-type": "application/json" },
     });
   }
-  let history: ChatMessage[] = [];
+  let userChats: UserChats = {}
   try {
-    if (env.CHAT_HISTORY && typeof env.CHAT_HISTORY.get === "function") {
       const stored = await env.CHAT_HISTORY.get(`history:${userId}`);
-      history = stored ? JSON.parse(stored) : [];
-    }
+      if (stored) {
+        userChats = JSON.parse(stored);
+      }
   } catch (err) {
     console.warn("Failed to read CHAT_HISTORY:", err);
-    history = [];
+    return new Response(JSON.stringify({ error: "Failed to load conversations" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
   }
-  const response = new Response(JSON.stringify({ history }), {
+  const chatNames = Object.entries(userChats).map(([chatId, chat]) => ({
+    chatId,
+    name: chat.name,
+  }));
+  const response = new Response(JSON.stringify({ chats: chatNames }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
@@ -103,13 +211,21 @@ async function handleChatRequest(
       });
     }
 
-    const { userId, messages: incoming } = body as {
+    const { userId, chatId, messages: incoming } = body as {
       userId?: string;
+      chatId?: string;
       messages?: unknown;
     };
 
     if (!userId || typeof userId !== "string") {
       return new Response(JSON.stringify({ error: "Missing or invalid userId" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (!chatId || typeof chatId !== "string") {
+      return new Response(JSON.stringify({ error: "Missing or invalid chatId" }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
@@ -128,14 +244,20 @@ async function handleChatRequest(
       });
     }
 
+    let userChats: UserChats = {};
     let history: ChatMessage[] = [];
     try {
       const stored = await env.CHAT_HISTORY.get(`history:${userId}`);
-      history = stored ? JSON.parse(stored) : [];
+      userChats = stored ? JSON.parse(stored) : {};
+      if (userChats[chatId]) {
+        history = userChats[chatId].messages;
+      } else {
+        // Create new chat if it doesn't exist
+        userChats[chatId] = { name: `Chat ${Object.keys(userChats).length + 1}`, messages: [] };
+      }
     } catch (err) {
       console.warn("Failed to read CHAT_HISTORY:", err);
     }
-
     const messages: ChatMessage[] = [...history, ...incomingMessages];
 
     if (!messages.some((msg) => msg.role === "system")) {
@@ -205,10 +327,11 @@ async function handleChatRequest(
         // Update chat history in KV
         if (responseText) {
           messages.push({ role: "assistant", content: responseText });
+          userChats[chatId].messages = messages
           ctx.waitUntil(
             env.CHAT_HISTORY.put(
               `history:${userId}`,
-              JSON.stringify(messages),
+              JSON.stringify(userChats),
               { expirationTtl: 60 * 60 * 24 * 7 }
             ).catch(err => console.warn("Failed to save chat history:", err))
           );

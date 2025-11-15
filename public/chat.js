@@ -9,11 +9,16 @@ const chatMessages = document.getElementById("chat-messages");
 const userInput = document.getElementById("user-input");
 const sendButton = document.getElementById("send-button");
 const typingIndicator = document.getElementById("typing-indicator");
-const newConvoButton = document.getElementById("new-convo-button");
+const newChatButton = document.getElementById("new-chat-btn");
+const chatList = document.getElementById("chat-list");
 
 // Chat state
+let userId = null;
+let currentChatId = null;
 let chatHistory = [];
+let chats = []; // Array of { name, chatId }
 let isProcessing = false;
+let chatCache = {}; // Cache chat histories: { chatId: [...messages] }
 
 // Auto-resize textarea as user types
 userInput.addEventListener("input", function () {
@@ -32,43 +37,33 @@ userInput.addEventListener("keydown", function (e) {
 // Send button click handler
 sendButton.addEventListener("click", sendMessage);
 
-// On page load fetch chat history and render
-window.addEventListener("DOMContentLoaded", async () => {
-  const userId = getUserId();
-  try {
-    const res = await fetch(`/api/history?userId=${encodeURIComponent(userId)}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data.history) && data.history.length) {
-        chatHistory = data.history;
-        renderChatHistory();
-        return;
-      }
-    }
-  } catch (e) {
-    console.warn("Failed to load chat history:", e);
-  }
+// New chat button
+if (newChatButton) {
+  newChatButton.addEventListener("click", createNewChat);
+}
 
-  // No history -> seed with default assistant greeting
-  chatHistory = [
-    {
-      role: "assistant",
-      content:
-        "Hello! I'm an LLM chat app powered by Cloudflare Workers AI. How can I help you today?",
-    },
-  ];
-  renderChatHistory();
+// On page load: initialize userId and load chats
+window.addEventListener("DOMContentLoaded", async () => {
+  userId = getUserId();
+  await loadChats();
+  
+  // If no chats, create one
+  if (chats.length === 0) {
+    await createNewChat();
+  } else {
+    // Load the first chat by default
+    selectChat(chats[0].chatId);
+  }
 });
 
 /**
  * Sends a message to the chat API and processes the response
  */
 async function sendMessage() {
-  const userId = getUserId();
   const message = userInput.value.trim();
 
-  // Don't send empty messages
-  if (message === "" || isProcessing) return;
+  // Don't send empty messages or if no chat selected
+  if (message === "" || isProcessing || !currentChatId) return;
 
   // Disable input while processing
   isProcessing = true;
@@ -106,6 +101,7 @@ async function sendMessage() {
       },
       body: JSON.stringify({
         userId: userId,
+        chatId: currentChatId,
         messages: chatHistory,
       }),
     });
@@ -166,6 +162,8 @@ async function sendMessage() {
 
     // Add completed response to chat history
     chatHistory.push({ role: "assistant", content: responseText });
+    // Update cache with latest history
+    chatCache[currentChatId] = chatHistory;
   } catch (error) {
     console.error("Error:", error);
     addMessageToChat(
@@ -201,6 +199,8 @@ function renderChatHistory() {
   // Clear
   chatMessages.innerHTML = "";
   for (const msg of chatHistory) {
+    // Skip system messages - they should not be displayed to the user
+    if (msg.role === "system") continue;
     addMessageToChat(msg.role, msg.content);
   }
 }
@@ -213,4 +213,153 @@ function getUserId() {
     localStorage.setItem("userId", userId);
   }
   return userId;
+}
+
+// Fetch and render chats for the current user
+async function loadChats() {
+  try {
+    const response = await fetch(`/api/conversations?userId=${encodeURIComponent(userId)}`);
+    if (response.ok) {
+      const data = await response.json();
+      chats = data.chats || [];
+      renderChatList();
+    }
+  } catch (error) {
+    console.error("Failed to load chats:", error);
+  }
+}
+
+// Create a new chat
+async function createNewChat() {
+  try {
+    const chatId = crypto.randomUUID?.() || String(Date.now());
+    
+    // Extract all numbers from existing chat names and find the first missing one
+    const usedNumbers = new Set();
+    for (const chat of chats) {
+      const match = chat.name.match(/Chat (\d+)/);
+      if (match) {
+        usedNumbers.add(parseInt(match[1], 10));
+      }
+    }
+    
+    // Find first missing number starting from 1
+    let nextNumber = 1;
+    while (usedNumbers.has(nextNumber)) {
+      nextNumber++;
+    }
+    
+    const name = `Chat ${nextNumber}`;
+    
+    chats.push({ name, chatId });
+    renderChatList();
+    selectChat(chatId);
+  } catch (error) {
+    console.error("Failed to create chat:", error);
+  }
+}
+
+// Select a chat and render its history
+async function selectChat(chatId) {
+  currentChatId = chatId;
+  
+  // Check if chat is in cache
+  if (chatCache[chatId]) {
+    chatHistory = chatCache[chatId];
+    renderChatList();
+    renderChatHistory();
+    return;
+  }
+  
+  // Otherwise fetch from server
+  try {
+    const response = await fetch(
+      `/api/history?userId=${encodeURIComponent(userId)}&chatId=${encodeURIComponent(chatId)}`
+    );
+    
+    if (response.ok) {
+      const data = await response.json();
+      chatHistory = data.history || [];
+    } else {
+      chatHistory = [];
+    }
+  } catch (error) {
+    console.error("Failed to load chat history:", error);
+    chatHistory = [];
+  }
+  
+  // If chat is empty, add default greeting
+  if (chatHistory.length === 0) {
+    chatHistory = [
+      {
+        role: "assistant",
+        content:
+          "Hello! I'm an LLM chat app powered by Cloudflare Workers AI. How can I help you today?",
+      },
+    ];
+  }
+  
+  // Cache it for future selections
+  chatCache[chatId] = chatHistory;
+  
+  renderChatList();
+  renderChatHistory();
+}
+
+// Delete a chat
+async function deleteChat(chatId) {
+  try {
+    await fetch(
+      `/api/history?userId=${encodeURIComponent(userId)}&chatId=${encodeURIComponent(chatId)}`,
+      { method: "DELETE" }
+    );
+    
+    chats = chats.filter(c => c.chatId !== chatId);
+    
+    // If we deleted the current chat, select another one or create a new one if none left
+    if (currentChatId === chatId) {
+      if (chats.length > 0) {
+        selectChat(chats[0].chatId);
+      } else {
+        await createNewChat();
+      }
+    } else {
+      renderChatList();
+    }
+  } catch (error) {
+    console.error("Failed to delete chat:", error);
+  }
+}
+
+// Render the chat list in the sidebar
+function renderChatList() {
+  chatList.innerHTML = "";
+  
+  for (const chat of chats) {
+    const item = document.createElement("div");
+    item.className = "chat-item";
+    if (chat.chatId === currentChatId) {
+      item.classList.add("active");
+    }
+    
+    item.innerHTML = `
+      <span class="chat-item-name">${chat.name}</span>
+      <button class="chat-item-delete" title="Delete chat">×</button>
+    `;
+    
+    // Click to select
+    item.querySelector(".chat-item-name").addEventListener("click", () => {
+      selectChat(chat.chatId);
+    });
+    
+    // Click × to delete
+    item.querySelector(".chat-item-delete").addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (confirm(`Delete "${chat.name}"?`)) {
+        deleteChat(chat.chatId);
+      }
+    });
+    
+    chatList.appendChild(item);
+  }
 }
